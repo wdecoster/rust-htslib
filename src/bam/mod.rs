@@ -846,7 +846,8 @@ impl IndexedReader {
             }
 
             if tid != last_tid {
-                if (last_tid >= -1) && (counts[tid as usize][0] + counts[tid as usize][1]) > 0 {
+                let array_idx = if tid == -1 { nref } else { tid as usize };
+                if (last_tid >= -1) && (counts[array_idx][0] + counts[array_idx][1]) > 0 {
                     return Err(Error::BamUnsorted);
                 }
                 last_tid = tid;
@@ -857,7 +858,8 @@ impl IndexedReader {
             } else {
                 0
             };
-            counts[(*b).core.tid as usize][idx] += 1;
+            let array_idx = if (*b).core.tid == -1 { nref } else { (*b).core.tid as usize };
+            counts[array_idx][idx] += 1;
         }
 
         if ret == -1 {
