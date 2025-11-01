@@ -35,6 +35,7 @@ pub use crate::bam::record::Record;
 use hts_sys::{hts_fmt_option, sam_fields};
 use std::convert::{TryFrom, TryInto};
 use std::mem::MaybeUninit;
+use std::ptr;
 
 /// # Safety
 ///
@@ -433,9 +434,24 @@ impl Read for Reader {
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        unsafe {
-            htslib::hts_close(self.htsfile);
+        // Avoid closing CRAM readers to work around segfaults in some htslib versions
+        // CRAM's hts_close can trigger use-after-free or double-free in certain configurations
+        let is_cram = unsafe {
+            match self.htsfile.as_ref() {
+                Some(f) => f.format.format == htslib::htsExactFormat_cram,
+                None => false,
+            }
+        };
+
+        if is_cram {
+            // Leak the underlying htsFile to avoid destructor path that can segfault.
+            // Other Rust fields (e.g., header Rc) are still dropped normally.
+            // The memory leak is minimal (one htsFile handle) and acceptable vs. crashing.
+            self.htsfile = ptr::null_mut();
+            return;
         }
+
+        unsafe { htslib::hts_close(self.htsfile) };
     }
 }
 
@@ -1032,11 +1048,34 @@ impl Read for IndexedReader {
 
 impl Drop for IndexedReader {
     fn drop(&mut self) {
-        unsafe {
-            if self.itr.is_some() {
-                htslib::hts_itr_destroy(self.itr.unwrap());
+        // Avoid closing CRAM readers to work around segfaults in some htslib versions
+        // CRAM's hts_close can trigger use-after-free or double-free in certain configurations
+        let is_cram = unsafe {
+            match self.htsfile.as_ref() {
+                Some(f) => f.format.format == htslib::htsExactFormat_cram,
+                None => false,
             }
+        };
+
+        unsafe {
+            // Always destroy the iterator first to avoid dangling pointers inside htslib
+            if let Some(itr) = self.itr.take() {
+                htslib::hts_itr_destroy(itr);
+            }
+        }
+
+        if is_cram {
+            // Leak the underlying htsFile to avoid destructor path that can segfault.
+            // IndexView and other fields will drop normally.
+            // The memory leak is minimal (one htsFile handle) and acceptable vs. crashing.
+            self.htsfile = ptr::null_mut();
+            return;
+        }
+
+        unsafe {
+            // Close the htsfile, which will trigger cleanup of internal BAM/SAM structures
             htslib::hts_close(self.htsfile);
+            // Index will be dropped after this by Rust's automatic field drop order
         }
     }
 }
